@@ -15,6 +15,7 @@ class VarBacktestResult:
     kupiec_pvalue: float
     christoffersen_lr: float
     christoffersen_pvalue: float
+    mean_es: float  # average Expected Shortfall over the test window
 
 
 def compute_var(
@@ -34,6 +35,26 @@ def compute_var(
         var = z * sigma
     var = var.rename(f"var_{int(alpha*100)}")
     return var
+
+
+def compute_es(
+    sigma: pd.Series,
+    alpha: float = 0.99,
+    side: Literal["long", "short"] = "long",
+) -> pd.Series:
+    """
+    Compute parametric Expected Shortfall (ES) assuming normal returns.
+
+    ES is the expected loss given that the loss exceeds the VaR level.
+    For a long position, ES is returned as a positive loss number.
+    """
+    z = norm.ppf(alpha)
+    phi = norm.pdf(z)
+    es = sigma * phi / (1 - alpha)
+    if side == "short":
+        es = -es
+    es = es.rename(f"es_{int(alpha*100)}")
+    return es
 
 
 def compute_var_violations(
@@ -136,6 +157,12 @@ def backtest_var(
     Full VaR backtest: VaR + violations + Kupiec + Christoffersen.
     """
     var = compute_var(sigma, alpha=alpha)
+    es = compute_es(sigma, alpha=alpha)
+
+    # Align ES with returns index and take the average over the test window
+    es_aligned = es.reindex(returns.index)
+    mean_es = float(es_aligned.mean())
+
     violations = compute_var_violations(returns, var)
     lr_uc, p_uc = kupiec_test(violations, alpha=alpha)
     lr_ind, p_ind = christoffersen_test(violations)
@@ -148,5 +175,6 @@ def backtest_var(
         kupiec_pvalue=p_uc,
         christoffersen_lr=lr_ind,
         christoffersen_pvalue=p_ind,
+        mean_es=mean_es,
     )
 
