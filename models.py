@@ -20,6 +20,22 @@ class RegimeResult:
     state_probs: pd.DataFrame
 
 
+@dataclass
+class MsGarchResult:
+    """
+    Simple Markov-switching-style GARCH result.
+
+    This is a pragmatic approximation:
+    - fit a baseline GARCH to the full return series
+    - fit a Markov-switching model (HMM) to returns
+    - rescale the GARCH volatility by regime-specific factors
+    """
+
+    garch: GarchResult
+    regime: RegimeResult
+    ms_volatility: pd.Series
+
+
 def fit_garch(
     returns: pd.Series,
     p: int = 1,
@@ -82,6 +98,54 @@ def fit_markov_regime_switching(
     probs_df.columns = [f"state_{i}_prob" for i in range(n_states)]
 
     return RegimeResult(model=hmm, states=states_series, state_probs=probs_df)
+
+
+def fit_ms_garch_like(
+    returns: pd.Series,
+    n_states: int = 2,
+    covariance_type: str = "diag",
+    random_state: Optional[int] = 42,
+) -> MsGarchResult:
+    """
+    Construct a regime-switching-style GARCH volatility series.
+
+    Steps:
+    1. Fit baseline GARCH on the full return history.
+    2. Fit a Gaussian HMM (regime model) on the same returns.
+    3. For each regime, compute the standard deviation of returns in that regime.
+    4. Scale the GARCH volatility by (regime_std / overall_std).
+    """
+    base_garch = fit_garch(returns)
+    regime = fit_markov_regime_switching(
+        returns,
+        n_states=n_states,
+        covariance_type=covariance_type,
+        random_state=random_state,
+    )
+
+    overall_std = returns.dropna().std()
+    if overall_std == 0 or np.isnan(overall_std):
+        overall_std = 1.0
+
+    factors = {}
+    for state_id in range(n_states):
+        mask = regime.states == state_id
+        if mask.any():
+            state_std = returns[mask].dropna().std()
+            if state_std and not np.isnan(state_std):
+                factors[state_id] = float(state_std / overall_std)
+            else:
+                factors[state_id] = 1.0
+        else:
+            factors[state_id] = 1.0
+
+    # Align GARCH volatility index with regime states
+    sigma = base_garch.volatility.reindex(regime.states.index)
+    factor_series = regime.states.map(lambda s: factors.get(int(s), 1.0))
+    ms_sigma = sigma * factor_series
+    ms_sigma.name = "ms_garch_sigma"
+
+    return MsGarchResult(garch=base_garch, regime=regime, ms_volatility=ms_sigma)
 
 
 def current_regime_info(regime_result: RegimeResult) -> Tuple[int, float]:

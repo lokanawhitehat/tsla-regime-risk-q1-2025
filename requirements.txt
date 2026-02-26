@@ -8,3 +8,7 @@ statsmodels
 streamlit
 matplotlib
 plotly
+pandas_datareader
+requests
+nltk
+vaderSentiment
