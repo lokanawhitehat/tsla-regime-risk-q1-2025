@@ -65,6 +65,67 @@ def forecast_garch_vol(
     return float(sigma)
 
 
+def _fit_vol_model(
+    returns: pd.Series,
+    vol: str,
+    p: int = 1,
+    q: int = 1,
+    o: int = 0,
+    dist: str = "normal",
+) -> GarchResult:
+    """Shared helper for GARCH, EGARCH, GJR."""
+    r = returns.dropna() * 100
+    am = arch_model(r, vol=vol, p=p, q=q, o=o, dist=dist, mean="Constant")
+    res = am.fit(disp="off")
+    cond_vol = res.conditional_volatility / 100.0
+    cond_vol.index = returns.dropna().index
+    return GarchResult(model=res, volatility=cond_vol)
+
+
+def fit_egarch(
+    returns: pd.Series,
+    p: int = 1,
+    q: int = 1,
+    o: int = 1,
+    dist: str = "normal",
+) -> GarchResult:
+    """
+    Fit EGARCH(1,1,1) to capture asymmetric (leverage) effects.
+    """
+    return _fit_vol_model(returns, vol="EGARCH", p=p, q=q, o=o, dist=dist)
+
+
+def fit_gjr_garch(
+    returns: pd.Series,
+    p: int = 1,
+    q: int = 1,
+    o: int = 1,
+    dist: str = "normal",
+) -> GarchResult:
+    """
+    Fit GJR-GARCH(1,1,1) to capture asymmetric shock effects.
+    """
+    return _fit_vol_model(returns, vol="GARCH", p=p, q=q, o=o, dist=dist)
+
+
+def fit_garch_student_t(
+    returns: pd.Series,
+    p: int = 1,
+    q: int = 1,
+) -> GarchResult:
+    """
+    Fit GARCH(1,1) with Student-t errors for fatter tails.
+    """
+    return _fit_vol_model(returns, vol="GARCH", p=p, q=q, o=0, dist="t")
+
+
+def forecast_vol_from_result(garch_result: GarchResult, horizon: int = 1) -> float:
+    """One-step-ahead volatility forecast from any GARCH-type result."""
+    fcast = garch_result.model.forecast(horizon=horizon)
+    sigma = np.sqrt(fcast.variance.values[-1, -1]) / 100.0
+    return float(sigma)
+
+
 def fit_markov_regime_switching(
     returns: pd.Series,
     n_states: int = 2,

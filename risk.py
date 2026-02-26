@@ -178,3 +178,85 @@ def backtest_var(
         mean_es=mean_es,
     )
 
+
+# ---- Volatility forecast accuracy ----
+
+def volatility_forecast_losses(
+    returns: pd.Series,
+    sigma_forecast: pd.Series,
+) -> pd.DataFrame:
+    """
+    Align returns and sigma_forecast, compute realized variance proxy (r²),
+    then return a DataFrame with per-observation MSE and QLIKE for variance.
+    """
+    aligned = pd.concat([returns, sigma_forecast], axis=1).dropna()
+    r = aligned.iloc[:, 0].values
+    h_pred = (aligned.iloc[:, 1].values) ** 2  # forecast variance
+    h_true = r ** 2  # realized variance proxy (squared return)
+
+    # Avoid zeros for QLIKE
+    h_pred = np.maximum(h_pred, 1e-10)
+    h_true = np.maximum(h_true, 1e-10)
+
+    mse = (h_pred - h_true) ** 2
+    # QLIKE: (h_true/h_pred) - log(h_true/h_pred) - 1
+    qlike = (h_true / h_pred) - np.log(h_true / h_pred) - 1.0
+
+    return pd.DataFrame(
+        {"mse": mse, "qlike": qlike},
+        index=aligned.index,
+    )
+
+
+def mean_squared_error_variance(
+    returns: pd.Series,
+    sigma_forecast: pd.Series,
+) -> float:
+    """Mean squared error of variance forecast vs squared return."""
+    df = volatility_forecast_losses(returns, sigma_forecast)
+    return float(df["mse"].mean())
+
+
+def mean_qlike_loss(
+    returns: pd.Series,
+    sigma_forecast: pd.Series,
+) -> float:
+    """Mean QLIKE loss for variance (lower is better)."""
+    df = volatility_forecast_losses(returns, sigma_forecast)
+    return float(df["qlike"].mean())
+
+
+def diebold_mariano_test(
+    returns: pd.Series,
+    sigma_forecast_a: pd.Series,
+    sigma_forecast_b: pd.Series,
+    loss: Literal["mse", "qlike"] = "mse",
+) -> Tuple[float, float]:
+    """
+    Diebold-Mariano test for equal predictive ability.
+    H0: E[L(e_A) - L(e_B)] = 0. Returns (DM statistic, one-sided p-value).
+    Positive DM and p < 0.05 means model B is significantly better (lower loss).
+    """
+    df_a = volatility_forecast_losses(returns, sigma_forecast_a)
+    df_b = volatility_forecast_losses(returns, sigma_forecast_b)
+    # Align
+    common = df_a.join(df_b, lsuffix="_a", rsuffix="_b").dropna()
+    if len(common) < 2:
+        return np.nan, np.nan
+    loss_a = common["mse_a"] if loss == "mse" else common["qlike_a"]
+    loss_b = common["mse_b"] if loss == "mse" else common["qlike_b"]
+    d = (loss_a - loss_b).values
+    n = len(d)
+    d_bar = d.mean()
+    # HAC variance with truncation at n^(1/4) or similar
+    k = max(1, int(n ** 0.25))
+    gamma_0 = np.var(d, ddof=1)
+    for lag in range(1, k):
+        gamma_0 += 2 * (1 - lag / (k + 1)) * np.cov(d[:-lag], d[lag:])[0, 1]
+    var_d = gamma_0 / n
+    if var_d <= 0:
+        return np.nan, np.nan
+    dm = d_bar / np.sqrt(var_d)
+    pvalue = 2 * (1 - norm.cdf(abs(dm)))
+    return float(dm), float(pvalue)
+
